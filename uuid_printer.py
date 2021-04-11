@@ -1,58 +1,48 @@
 import uuid
 import segno
-import fpdf
 from functools import lru_cache
 from typing import List
 import sourcerandom
 import os
 import hashlib
+import svgutils.transform
 
-
-config = {"dpi":100,
-"margins":10,
-"error":"H",
-"spacing":0.5,
-"font_size":5,
-"orientation":"L",
-"format":"A4",
-}
 
 def pt2mm(pt: float) -> float:
     return 0.35277777777778*pt
 
-# size of cell
+def mm2px(mm: float) -> float:
+    return 96 / 25.4 * mm
+
+def px2mm(mm: float) -> float:
+    return 25.4 / 96 * mm
+
+A4 = [mm2px(297), mm2px(210)]
+
+config = {
+#"dpi":100,
+"margins":mm2px(10),
+"error":"H",
+#"spacing":0.5,
+"font_size":5,
+#"orientation":"L",
+#"format":"A4",
+}
 
 @lru_cache
-def size_of_qr() -> [float, float]:
-    qrcode = segno.make(int(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF), error=config["error"])  # 128 bit number
-    qrimage = qrcode.to_pil()
-    wqr = qrimage.width/(config["dpi"])*25.4
-    hqr = qrimage.height/(config["dpi"])*25.4
-    return [wqr, hqr]
-
-@lru_cache
-def size_of_text() -> [float, float]:
-    pdf = fpdf.FPDF()
-    pdf.set_font('courier', '', config["font_size"])
-    wt = pdf.get_string_width("12345678")  # 8 glyphs
-    ht = pt2mm(config["font_size"])
-    return [wt, ht]
-
 def size_of_cell() -> [float, float]:
-    w = max(size_of_qr()[0],size_of_text()[0]) + config["spacing"]
-    h = size_of_qr()[1] + size_of_text()[1] + config["spacing"]
+    qrcode = segno.make(int(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF), error=config["error"])  # 128 bit number
+    qr_svg = svgutils.transform.fromstring(qrcode.svg_inline())
+    w, h = qr_svg.get_size()
+    wqr = float(w)
+    hqr = float(h)
+    w = wqr
+    h = hqr + config["font_size"]
     return [w, h]
-
-# number of cells
-
-def size_of_page() -> [float, float]:
-    pdf = fpdf.FPDF(orientation=config["orientation"], unit="mm", format=config["format"])
-    pdf.add_page()
-    return [pdf.w, pdf.h]
 
 @lru_cache
 def size_of_printable() -> [float, float]:
-    [w, h] = size_of_page()
+    w, h = A4
     return [w - 2 * config["margins"], h - 2 * config["margins"]]
 
 def number_of_cells() -> [int, int]:
@@ -75,7 +65,6 @@ def better_uuid4():
     tumbler.update(os.urandom(16))
     tumbler.update(qrng.randint(0,0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF).to_bytes(16,'big'))
     ret = uuid.UUID(bytes=tumbler.digest(),version=4)
-    #print(ret)
     return ret
 
 
@@ -84,51 +73,36 @@ def array_of_uuids(dimensions: List[int]):
     for i in range(dimensions[0]):
         ret.append(list())
         for j in range(dimensions[1]):
-            ret[i].append(better_uuid4())  # FIXME unsafe
+            ret[i].append(uuid.uuid4())  # better_uuid4()
     return ret
 
-def draw_cell(pdf, x, y, data):
+def draw_cell(data):
     qrcode = segno.make(data.int, error=config["error"])
-    qrimage = qrcode.to_pil()
-    pdf.image(qrimage, x = x + config["spacing"], y = y + config["spacing"], w = size_of_qr()[0], h = size_of_qr()[1])  # ERROR fpdf.image is using broken deduplication which corrupts file output - not unique qr codes for unique input
-    pdf.text(x = x + config["spacing"], y = y + config["spacing"] + size_of_qr()[1], txt = data.hex[0:8])
-
+    qr_svg = svgutils.transform.fromstring(qrcode.svg_inline())
+    w, h = qr_svg.get_size()
+    wqr = float(w)
+    hqr = float(h)
+    w = wqr
+    h = hqr + config["font_size"]
+    qr_element = qr_svg.getroot()
+    text_element = svgutils.transform.TextElement(wqr/2., hqr + config["font_size"] - 1, data.hex[0:8], size=config["font_size"], anchor="middle", font="OCR A Extended")
+    line_element = svgutils.transform.LineElement([[0, 0], [w, 0], [w, h], [0, h], [0, 0]])
+    line_element.root.attrib["style"] = "fill:none"
+    return svgutils.transform.GroupElement([qr_element, text_element, line_element])
 
 def main():
-    pdf = fpdf.FPDF(orientation=config["orientation"], unit="mm", format=config["format"])
-    pdf.add_page()
-    pdf.set_font('courier', '', config["font_size"])
+    fig = svgutils.transform.SVGFigure()
+    size = [str(A4[0]),str(A4[1])]
+    fig.set_size(size)
+
     uuids = array_of_uuids(number_of_cells())
     for i, row in enumerate(uuids):
         for j, cell in enumerate(row):
-            draw_cell(pdf, i * size_of_cell()[0] + config["margins"], j * size_of_cell()[1] + config["margins"], cell)
-            print([cell.int, i, j])
-    pdf.output("test_segno.pdf")
+            cell_element = draw_cell(cell)
+            w, h = size_of_cell()
+            cell_element.moveto(w * i + config["margins"], h * j + config["margins"])
+            fig.append([cell_element])
+    fig.save("test_qr.svg")
 
 if __name__ == "__main__":
     main()
-
-
-# pdf = fpdf.FPDF(orientation="L", unit="mm", format="A4")
-# pdf.add_page()
-# pdf.set_font('courier', '', 5)
-
-# x = 10
-# y = 10
-
-# pdf.line(config["margins"], config["margins"], config["margins"], pdf.h - config["margins"])
-
-# for i in range(1,10):
-
-#     uuid1 = uuid.uuid4()
-
-#     s = segno.make(uuid1.int, error="H")
-#     sp = s.to_pil()
-#     w = sp.width/(i*20)*25.4
-
-#     pdf.image(sp, x=x, y = y, w = w)
-#     pdf.text(x=x, y = y+w+2, txt = uuid1.hex[0:8]+"\t"+str(i*20))
-
-#     y = y+w+10
-
-# pdf.output("test_segno.pdf")
